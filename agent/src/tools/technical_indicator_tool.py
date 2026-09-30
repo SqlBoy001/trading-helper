@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -18,6 +19,54 @@ from src.agent.tools import BaseTool
 from src.market_data import fetch_market_data
 
 logger = logging.getLogger(__name__)
+
+# A symbol this tool's loader chain can consume directly: bare US-style
+# tickers (AAPL), and <code>.<suffix> forms (600519.SH, 00700.HK, TD.TO,
+# RELIANCE.NS, BTC-USDT, EURUSD=X, ...). Anything that doesn't match — most
+# commonly a Chinese or English company name — needs a search_symbol lookup
+# first; without it, a name like "利通电子" reaches the Tushare/Tencent/etc.
+# loaders verbatim and fails with a provider error that looks unrelated to the
+# real problem (see backtest/loaders/tushare.py's ts_code shape check).
+_RESOLVED_SYMBOL_RE = re.compile(
+    r"^(local:.+|[A-Za-z0-9&.\-/=]+)$"
+)
+
+
+def _looks_like_resolved_symbol(token: str) -> bool:
+    """Heuristic: does *token* already look like a tradable symbol?
+
+    Returns False for anything containing non-ASCII characters (Chinese
+    company names) or whitespace (multi-word free text) — the cases that
+    actually need :class:`SymbolSearchTool` resolution. A plain ASCII token
+    the regex accepts may still be an unresolvable ticker fragment; that
+    failure is left to the normal "no data returned" path.
+    """
+    token = token.strip()
+    return bool(token) and token.isascii() and bool(_RESOLVED_SYMBOL_RE.match(token))
+
+
+def _resolve_symbol(query: str) -> tuple[str | None, str | None]:
+    """Resolve a free-text name/fragment to a concrete symbol.
+
+    Args:
+        query: The original, unresolved input (e.g. a Chinese company name).
+
+    Returns:
+        ``(resolved_symbol, error)`` — exactly one is ``None``. ``error`` is a
+        user-facing string describing why resolution failed.
+    """
+    from src.tools.symbol_search_tool import SymbolSearchTool
+
+    try:
+        envelope = json.loads(SymbolSearchTool().execute(query=query, limit=1))
+    except Exception as exc:  # noqa: BLE001 - resolution must never crash the tool
+        logger.debug("search_symbol failed for %r: %s", query, exc)
+        return None, f"symbol lookup failed for {query!r}: {exc}"
+
+    candidates = envelope.get("data", {}).get("candidates", []) if envelope.get("ok") else []
+    if not candidates:
+        return None, f"could not resolve {query!r} to a trading symbol via search_symbol"
+    return candidates[0]["symbol"], None
 
 # ── Indicator defaults ────────────────────────────────────────────────────────
 _RSI_PERIOD = 14
@@ -173,7 +222,10 @@ class TechnicalIndicatorTool(BaseTool):
     description = (
         "Compute common technical indicators (RSI, MACD, Bollinger Bands, "
         "SMA, EMA) for a trading symbol. Uses the project's data loaders "
-        "to fetch price history, then computes indicators locally."
+        "to fetch price history, then computes indicators locally. Accepts "
+        "either a ticker/symbol (600519.SH, AAPL, BTC-USDT) or a free-text "
+        "company name (e.g. 贵州茅台); a name is auto-resolved via "
+        "search_symbol before fetching."
     )
     parameters = {
         "type": "object",
@@ -211,6 +263,16 @@ class TechnicalIndicatorTool(BaseTool):
 
         if not symbol:
             return json.dumps({"ok": False, "error": "symbol is required"})
+
+        resolved_from = None
+        if not _looks_like_resolved_symbol(symbol):
+            # Company name (or other free-text query) rather than a ticker —
+            # resolve it before it ever reaches a data loader.
+            resolved, resolve_error = _resolve_symbol(symbol)
+            if resolved is None:
+                return json.dumps({"ok": False, "error": resolve_error})
+            resolved_from = symbol
+            symbol = resolved
 
         try:
             lookback = int(lookback_raw)
@@ -275,15 +337,14 @@ class TechnicalIndicatorTool(BaseTool):
             else None
         )
 
-        return json.dumps(
-            {
-                "ok": True,
-                "symbol": symbol,
-                "interval": interval,
-                "latest_close": latest_close,
-                "latest_date": latest_date,
-                "indicators": indicators,
-            },
-            ensure_ascii=False,
-            default=str,
-        )
+        payload: dict[str, Any] = {
+            "ok": True,
+            "symbol": symbol,
+            "interval": interval,
+            "latest_close": latest_close,
+            "latest_date": latest_date,
+            "indicators": indicators,
+        }
+        if resolved_from is not None:
+            payload["resolved_from"] = resolved_from
+        return json.dumps(payload, ensure_ascii=False, default=str)

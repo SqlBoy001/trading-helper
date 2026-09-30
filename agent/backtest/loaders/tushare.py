@@ -5,6 +5,7 @@ Minute data uses ``pro.stk_mins()`` (Tushare points >= 2000).
 """
 
 import logging
+import re
 import time
 from typing import Any, Callable, Dict, List, Optional
 
@@ -113,6 +114,23 @@ def _is_crypto(code: str) -> bool:
     return upper.endswith("-USDT") or upper.endswith("/USDT")
 
 
+# Every ts_code shape Tushare's daily/hk_daily/index_daily/fund_daily accept is
+# <digits>.<two-letter exchange>  (600519.SH, 000001.SZ, 00700.HK, 830799.BJ,
+# 000300.SH index, 510300.SH ETF). A company name or any other free-text query
+# never matches this, so it is rejected here — before it reaches the Tushare
+# API — with a message that names the real problem. Left unchecked, the raw
+# string used to reach ``ts.pro_api().daily(ts_code=...)``, which rejected the
+# malformed parameter with a generic "您的token不对，请确认" (roughly "your
+# token is wrong") — a token-looking error for what is actually an invalid
+# symbol, which sent troubleshooting in the wrong direction.
+_TS_CODE_RE = re.compile(r"^\d+\.[A-Za-z]{2}$")
+
+
+def _looks_like_ts_code(code: str) -> bool:
+    """Check whether *code* has the ``<digits>.<exchange>`` shape Tushare expects."""
+    return bool(_TS_CODE_RE.match(code.strip()))
+
+
 @register
 class DataLoader:
     """Tushare-backed OHLCV loader."""
@@ -213,6 +231,18 @@ class DataLoader:
         """Fetch and normalize one daily OHLCV frame, routing by symbol type."""
         if _is_us_equity(code) or _is_crypto(code):
             logger.warning("tushare does not support %s (US/crypto); skipping", code)
+            return None
+
+        if not _looks_like_ts_code(code):
+            # Fail here with the real cause instead of letting Tushare reject
+            # the malformed ts_code parameter with a generic "token" error.
+            # A company name (or any other free-text query) needs to be
+            # resolved to a ts_code first, e.g. via SymbolSearchTool.
+            logger.warning(
+                "tushare: %r is not a valid ts_code (expected '<digits>.<exchange>', "
+                "e.g. '600519.SH'); resolve names to a symbol before fetching",
+                code,
+            )
             return None
 
         if _is_etf_listed(code):
@@ -363,6 +393,13 @@ class DataLoader:
                     else "crypto"
                 )
                 logger.warning("tushare does not support intraday data for %s (%s); skipping", code, sym_type)
+                continue
+            if not _looks_like_ts_code(code):
+                logger.warning(
+                    "tushare: %r is not a valid ts_code (expected '<digits>.<exchange>', "
+                    "e.g. '600519.SH'); resolve names to a symbol before fetching",
+                    code,
+                )
                 continue
             try:
                 df = self.api.stk_mins(ts_code=code, freq=freq, start_date=sd, end_date=ed)

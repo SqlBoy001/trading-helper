@@ -1133,6 +1133,10 @@ vibe-trading --swarm-run macro_rates_fx_desk '{"focus": "Fed pivot impact on EM 
 vibe-trading --swarm-retry <run_id> --swarm-resume
 ```
 
+### Personal decision journal (local prototype)
+
+Record pre-trade plans, intentions, reminders, user decisions, reported executions and reviews with append-only corrections. The local agent discovers `record_decision_event` and `read_decision_journal`; the no-model entry point is `cd agent && python -m src.decision_journal --help`. Plans retain their original versions and effective times, reads return full records, and retry keys prevent duplicate writes. This records evidence only: it neither executes trades nor updates broker holdings. A separate personal Web capture UI supports local macOS screenshot OCR, confirmation and correction: run `agent/scripts/start_personal_web.sh`. It has no model/broker connection or MCP export. See [the Web guide](docs/personal-web.md) and [the input contract](docs/personal-decision-journal.md).
+
 ### Cross-Session Memory
 
 ```bash
@@ -2033,3 +2037,5 @@ MIT License — see [LICENSE](LICENSE)
 <p align="center">
   <img src="https://visitor-badge.laobi.icu/badge?page_id=HKUDS.Vibe-Trading&style=flat" alt="visitors"/>
 </p>
+
+Personal holdings integration: [shared journal and existing scheduled tasks](docs/personal-holdings-task-contract.md). `docker-compose.personal.yml` connects the existing personal capture directory via `VIBE_PERSONAL_DATA_DIR`, with scheduler/channel auto-start enabled (review these settings before starting). `VIBE_TRADING_DECISION_JOURNAL_PATH` selects one shared absolute journal path without changing the runtime home.

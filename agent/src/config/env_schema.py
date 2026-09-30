@@ -182,6 +182,7 @@ class DataConfig(_EnvBase):
     fmp_api_key: str = Field(alias="FMP_API_KEY", default="")
     fred_api_key: str = Field(alias="FRED_API_KEY", default="")
     vibe_trading_iwencai_key: str = Field(alias="VIBE_TRADING_IWENCAI_KEY", default="")
+    hithink_finance_api_key: str = Field(alias="HITHINK_FINANCE_API_KEY", default="")
     vibe_trading_sec_ua: str = Field(alias="VIBE_TRADING_SEC_UA", default="")
     # 13F scan bounds. No gt=0 constraint: a non-positive override must fall
     # back to the default like any other bad value, and a constraint would

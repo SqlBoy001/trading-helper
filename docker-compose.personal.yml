@@ -1,0 +1,12 @@
+# Personal runtime: shared journal and user-authorized scheduled WeChat reports.
+# VIBE_PERSONAL_DATA_DIR must point to the existing personal Web data directory.
+services:
+  vibe-trading:
+    environment:
+      VIBE_TRADING_ENABLE_SCHEDULER: "1"
+      VIBE_TRADING_CHANNELS_AUTO_START: "1"
+      VIBE_TRADING_DECISION_JOURNAL_PATH: /data/personal/decision_journal.sqlite3
+    volumes:
+      - ${VIBE_PERSONAL_DATA_DIR:?Set the existing personal data directory}:/data/personal
+      - ./agent/src/decision_journal:/app/agent/src/decision_journal:ro
+      - ./agent/src/tools/decision_journal_tool.py:/app/agent/src/tools/decision_journal_tool.py:ro

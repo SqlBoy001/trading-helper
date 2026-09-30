@@ -10,7 +10,13 @@ import re
 import sys as _sys
 import time
 import uuid
+from datetime import datetime as _datetime
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional
+
+try:
+    from zoneinfo import ZoneInfo as _ZoneInfo
+except ImportError:  # pragma: no cover - Python < 3.9 fallback, unused in this repo
+    _ZoneInfo = None  # type: ignore[assignment]
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -78,7 +84,7 @@ async def _dispatch_scheduled_research_job(job) -> Optional[str]:
     # Pass a copy so the session runtime's internal config writes (e.g.
     # include_shell_tools) do not mutate the persisted scheduled-run config.
     session = svc.create_session(
-        title=f"scheduled-research:{job.id}", config=dict(job.config)
+        title=_scheduled_session_title(job), config=dict(job.config)
     )
     logger.info(
         "dispatching scheduled research job %s via session %s",
@@ -89,12 +95,63 @@ async def _dispatch_scheduled_research_job(job) -> Optional[str]:
     return session.session_id
 
 
+# Short Chinese labels for the session title, keyed by job id. Falls back to
+# the job's own `title` field (also Chinese) when the id isn't one of the
+# four built-in recurring reports, so a user-created job still gets a
+# readable, dated title instead of the raw "scheduled-research:<id>" slug.
+_SCHEDULED_JOB_SHORT_LABELS: Dict[str, str] = {
+    "cn_premarket_brief": "早报",
+    "cn_postmarket_review": "晚报",
+    "cn_weekly_trade_review": "周报",
+    "cn_monthly_strategy_review": "月报",
+    "cn_limit_up_scan": "打板",
+}
+
+
+def _scheduled_session_title(job: "ScheduledResearchJob") -> str:
+    """Build a dated, Chinese session title for a dispatched scheduled run.
+
+    Format: ``MMDD-<label>`` (e.g. ``0830-周报``), where MMDD is today's date
+    in the job's configured timezone (falls back to the host's local time
+    when the timezone is unset or unresolvable — an interval job, for
+    instance, carries no IANA zone). ``<label>`` is the short built-in name
+    for the four bundled reports, or the job's own ``title``/``id`` for any
+    other job so it still gets a dated, readable title.
+    """
+    now = _datetime.now()
+    tz_name = getattr(job, "timezone", None)
+    if tz_name and _ZoneInfo is not None:
+        try:
+            now = _datetime.now(_ZoneInfo(tz_name))
+        except Exception:  # noqa: BLE001 - an invalid/unknown zone falls back to local time
+            pass
+    date_prefix = now.strftime("%m%d")
+    label = _SCHEDULED_JOB_SHORT_LABELS.get(job.id) or job.title or job.id
+    return f"{date_prefix}-{label}"
+
+
+# Marker line an agent's final message can emit to attach a rendered report
+# file (produced by the `render_html_report` tool) to the scheduled
+# delivery. Kept out of the visible briefing text — `_read_scheduled_briefing`
+# strips every matching line before handing the text to the channel sender.
+# Deliberately a plain-text convention rather than a new session/message
+# schema field: it survives the existing `Message.content` round-trip with
+# zero changes to the session store, executor signatures, or their tests.
+_REPORT_MEDIA_MARKER_RE = re.compile(r"^\s*\[report-media:\s*(\S+)\s*\]\s*$", re.MULTILINE)
+
+
 def _read_scheduled_briefing(session_id: str) -> Optional[tuple[str, str]]:
     """Return ``(terminal status, briefing text)`` once a run has finished.
 
     The assistant reply carries the attempt's terminal status in its metadata,
     and it is the same text the user sees in the session — delivering anything
     else would mean the channel and the app disagree about what the run said.
+    Any ``[report-media: /path/to/file]`` marker line the reply contains
+    (emitted by a prompt instructed to call ``render_html_report`` and report
+    the resulting file this way) is left in place here — it is extracted and
+    stripped by ``_send_scheduled_briefing`` right before delivery, not here,
+    so this function's ``(status, text)`` contract and the executor's
+    tuple-unpacking stay unchanged.
 
     Args:
         session_id: Session the scheduled run was dispatched into.
@@ -118,17 +175,34 @@ def _read_scheduled_briefing(session_id: str) -> Optional[tuple[str, str]]:
 async def _send_scheduled_briefing(channel: str, target: Optional[str], text: str):
     """Deliver one briefing through the configured IM channel.
 
+    Any ``[report-media: /path/to/file]`` marker line in ``text`` (see
+    ``_REPORT_MEDIA_MARKER_RE``) is extracted as a media attachment and
+    stripped from the visible message before sending — the channel adapter
+    decides how to render each file type (WeChat sends an image inline,
+    anything else as a generic file attachment; see
+    ``channels/weixin.py:_send_media_file``).
+
     Args:
         channel: Channel id as configured in the channel runtime.
         target: Address within that channel, or ``None`` for its default.
-        text: The briefing to deliver.
+        text: The briefing to deliver, possibly carrying a report-media marker.
 
     Raises:
         RuntimeError: If the channel runtime is unavailable or has no such
             channel, so the outbox records a retryable failure rather than
             reporting a delivery that never happened.
     """
+    from pathlib import Path as _Path
+
     from src.channels.bus.events import OutboundMessage
+
+    # Only attach paths that actually exist — a hallucinated or stale marker
+    # path (the model paraphrased the tool result instead of copying it
+    # exactly) degrades to a text-only send rather than raising.
+    media = [
+        path for path in _REPORT_MEDIA_MARKER_RE.findall(text) if _Path(path).is_file()
+    ]
+    cleaned_text = _REPORT_MEDIA_MARKER_RE.sub("", text).strip()
 
     host = _sys.modules.get("api_server") or _sys.modules.get("agent.api_server")
     manager = getattr(host, "_channel_manager", None) if host else None
@@ -140,7 +214,7 @@ async def _send_scheduled_briefing(channel: str, target: Optional[str], text: st
     if not target:
         raise RuntimeError(f"channel {channel!r} has no delivery target configured")
     return await adapter.send_with_receipt(
-        OutboundMessage(channel=channel, chat_id=target, content=text)
+        OutboundMessage(channel=channel, chat_id=target, content=cleaned_text, media=media)
     )
 
 

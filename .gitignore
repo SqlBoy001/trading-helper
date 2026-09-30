@@ -118,3 +118,7 @@ bench_report.json
 # Grounding ledger persisted by ad-hoc verification scripts into tests/
 agent/tests/artifacts/
 .idea/*
+
+# Local assistant evidence and tool output (may contain personal data)
+.nanobot/
+.planning/

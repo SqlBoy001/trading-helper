@@ -1161,9 +1161,16 @@ class WeixinChannel(BaseChannel):
                     # Network/transport errors: do NOT fall back to text —
                     # the text send would also likely fail, and the outer
                     # except will re-raise so ChannelManager retries properly.
-                    self.logger.opt(exception=True).warning(
-                        "Network error sending media {}",
-                        media_path,
+                    # self.logger is a stdlib logging.Logger (see BaseChannel),
+                    # which has no .opt() — that's a loguru-only method. This
+                    # call raised AttributeError instead of logging a warning
+                    # every time this branch actually fired (e.g. a real
+                    # network drop while sending a report image), masking the
+                    # real network error behind a crash in the error handler
+                    # itself and aborting delivery before the outer except
+                    # could retry it.
+                    self.logger.warning(
+                        "Network error sending media %s", media_path, exc_info=True
                     )
                     raise
                 except httpx.HTTPStatusError as http_err:

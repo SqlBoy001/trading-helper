@@ -133,7 +133,22 @@ Comprehensive knowledge base covering:
 
 Use `load_skill(name)` to access full methodology docs with code templates.
 
-## Available MCP Tools (74)
+## Symbol Input Convention
+
+Every market-data tool (`get_market_data`, `technical_indicators`, `get_fundamentals`, `pattern_recognition`, backtesting, etc.) expects a resolved ticker/symbol in the project's convention — `600519.SH`, `00700.HK`, `AAPL`, `BTC-USDT` — not a company name. A raw Chinese or English name (e.g. 利通电子, "Apple") passed straight to a loader is silently misrouted or rejected by the underlying data provider, and the resulting error can look unrelated to the real cause (e.g. Tushare rejects a name as a malformed `ts_code` parameter with a generic "token" error that has nothing to do with the actual `TUSHARE_TOKEN`).
+
+`technical_indicators` auto-resolves an unrecognized (non-ASCII / free-text) symbol through `search_symbol` before fetching, so a bare company name works for that tool specifically. For every other symbol-taking tool, call `search_symbol(query="<name>")` first and use the returned `symbol` field — do this whenever a user gives a Chinese name, an English company name, or any other ambiguous fragment instead of an exact ticker, regardless of market.
+
+## A-share Data-Source Priority (Hithink first)
+
+When `HITHINK_FINANCE_API_KEY` is configured, Hithink (同花顺 Financial-API, `fuyao.aicubes.cn`) is the **first-priority** source for A-share sector/board and special-data queries, with the existing free sources (Eastmoney/Tushare) as the automatic fallback on any failure (unconfigured key, network error, rate limit, business error) — never the other way around:
+
+- `get_sector_board` — new tool, Hithink-only for `catalog`/`constituents`/`search` (no free equivalent exists in this project for board taxonomy browsing, board constituents, or resolving a board/fund name to its `thscode`); Hithink-first with an Eastmoney fallback for `ranking`/`membership`.
+- `get_dragon_tiger` — tries Hithink first, falls back to Eastmoney (then the optional Tushare fallback) on failure. Hithink's board endpoint carries no per-seat brokerage detail, so a `code`-scoped lookup still layers Eastmoney's seat report on top of the Hithink-sourced appearances.
+
+Without a Hithink key, both tools behave exactly as before (Eastmoney-first). Use `get_sector_board(mode="search", query="<board/sector name>")` to resolve a sector name to its `thscode` before calling `mode="constituents"` — this solves "which stocks are in sector X" for concept/region/industry boards that `search_symbol` does not cover.
+
+## Available MCP Tools (77)
 
 | Tool | Description | API Key |
 |------|-------------|---------|
@@ -152,7 +167,10 @@ Use `load_skill(name)` to access full methodology docs with code templates.
 | `pattern_recognition` | Detect chart patterns (H&S, double top, etc.) | None |
 | `get_market_data` | Fetch OHLCV data (auto-detect + ordered fallback across 25 sources) | None* |
 | `get_fund_flow` | Capital fund-flow (main/retail net inflow) | None* |
-| `get_dragon_tiger` | Dragon-tiger list (龙虎榜) top buyer/seller seats | None* |
+| `get_dragon_tiger` | Dragon-tiger list (龙虎榜) top buyer/seller seats. Hithink-first, Eastmoney/Tushare fallback | None* |
+| `get_sector_board` | Board taxonomy: search/catalog/constituents/ranking/membership. Hithink-first for catalog/constituents/search (no free equivalent); Eastmoney fallback for ranking/membership | HITHINK_FINANCE_API_KEY* |
+| `get_limit_pools` | 涨停/跌停/炸板 pools + 30-day 连板天梯 ("打板" scan inputs). Hithink-only, no fallback | HITHINK_FINANCE_API_KEY |
+| `get_hot_stocks` | 同花顺热榜: 飙升榜/热股榜/历史热榜/个股排名走势 (attention-rank early-warning signal). Hithink-only, no fallback | HITHINK_FINANCE_API_KEY |
 | `get_northbound_flow` | Northbound (Stock Connect) net flow | None* |
 | `get_margin_trading` | Margin trading & short-selling balances | None* |
 | `get_block_trades` | Block-trade (大宗交易) records | None* |
@@ -209,10 +227,10 @@ Use `load_skill(name)` to access full methodology docs with code templates.
 | `cashflow_performance` | XIRR / MOIC / DPI / TVPI / TWR / Modified Dietz over dated cash flows | None |
 | `orderbook_depth` | Crypto L2 ladder — spread bps, depth imbalance, impact cost | None |
 | `sentiment` | Local lexicon text scoring + crypto Fear & Greed Index | None |
-| `technical_indicators` | RSI / MACD / Bollinger / SMA / EMA through the existing loaders | None* |
+| `technical_indicators` | RSI / MACD / Bollinger / SMA / EMA through the existing loaders. Accepts a ticker or a free-text company name — a name is auto-resolved via `search_symbol` before fetching | None* |
 | `get_fundamentals` | PIT-safe SEC fundamentals panels (filed-date anchored) | None |
 
-<sub>*A-share symbols require `TUSHARE_TOKEN`. HK/US/Canada/crypto are free. Trading connector rows use the selected connector profile, e.g. IBKR local TWS/Gateway or Robinhood MCP OAuth.</sub>
+<sub>*A-share symbols require `TUSHARE_TOKEN`. HK/US/Canada/crypto are free. Trading connector rows use the selected connector profile, e.g. IBKR local TWS/Gateway or Robinhood MCP OAuth. `get_sector_board`'s `catalog`/`constituents`/`search` modes require `HITHINK_FINANCE_API_KEY` (no free equivalent); its `ranking`/`membership` modes and `get_dragon_tiger` work without it via the free Eastmoney fallback, using Hithink only when the key is configured. `get_limit_pools` and `get_hot_stocks` have no free-source equivalent at all, so they are excluded entirely from the registry (not just degraded) when `HITHINK_FINANCE_API_KEY` is unset.</sub>
 
 ## Quick Start
 

@@ -40,6 +40,12 @@ _BLOCKED_UPLOAD_NAMES = {
 }
 
 _SHADOW_ID_RE = re.compile(r"^shadow_[0-9a-f]{8}$")
+_REPORT_ID_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
+_REPORT_MEDIA_TYPES = {
+    "html": "text/html; charset=utf-8",
+    "pdf": "application/pdf",
+    "png": "image/png",
+}
 
 # ---------------------------------------------------------------------------
 # Registration
@@ -114,6 +120,29 @@ def register_uploads_routes(
             path,
             media_type=media_type,
             headers={"Content-Disposition": f'inline; filename="{shadow_id}.{format}"'},
+        )
+
+    @app.get("/reports/{report_id}", dependencies=[Depends(require_auth)])
+    async def get_agent_report(report_id: str, format: str = "html"):
+        """Serve a generic agent-rendered report (see ``render_html_report`` tool).
+
+        Reports live under ``~/.vibe-trading/agent_reports/<report_id>.{html,pdf,png}``.
+        Distinct from ``/shadow-reports/{shadow_id}``, which is Shadow-Account-specific.
+        """
+        if not _REPORT_ID_RE.match(report_id):
+            raise HTTPException(status_code=400, detail="invalid report_id")
+        if format not in _REPORT_MEDIA_TYPES:
+            raise HTTPException(status_code=400, detail="format must be one of: html, pdf, png")
+
+        reports_dir = Path.home() / ".vibe-trading" / "agent_reports"
+        path = reports_dir / f"{report_id}.{format}"
+        if not path.exists():
+            raise HTTPException(status_code=404, detail=f"report not found: {report_id}.{format}")
+
+        return FileResponse(
+            path,
+            media_type=_REPORT_MEDIA_TYPES[format],
+            headers={"Content-Disposition": f'inline; filename="{report_id}.{format}"'},
         )
 
     @app.post("/upload", dependencies=[Depends(require_auth)])
